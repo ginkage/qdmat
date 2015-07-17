@@ -20,7 +20,7 @@ public class Analyzer {
         public IObject object;
         public Map<ObjectNode, String> outRefs;
         public Set<ObjectNode> inRefs;
-        public Set<ObjectNode> retains;
+        public Map<ObjectNode, String> retains;
         public double size;
         public int selfSize;
 
@@ -38,7 +38,7 @@ public class Analyzer {
             this.object = object;
             this.outRefs = new HashMap<>();
             this.inRefs = new HashSet<>();
-            this.retains = new HashSet<>();
+            this.retains = new HashMap<>();
 
             IClass clazz = object.getClazz();
             this.selfSize = clazz.getHeapSizePerInstance();
@@ -52,6 +52,12 @@ public class Analyzer {
             parent.link(this, name);
         }
 
+        void retain(ObjectNode ret, String name) {
+            if (!retains.containsKey(ret) && !name.contains("ClassLoader")) {
+                retains.put(ret, name);
+            }
+        }
+
         // "A -> B" folded into "AB" using the outbound reference from A.
         ObjectNode(ObjectNode a, ObjectNode b) {
             String name = a.outRefs.get(b);
@@ -61,10 +67,14 @@ public class Analyzer {
             this.inRefs = new HashSet<>();
             this.size = a.size  + b.size;
             this.selfSize = a.selfSize;
-            this.retains = new HashSet<>();
-            this.retains.addAll(a.retains);
-            this.retains.addAll(b.retains);
-            this.retains.add(b); // The new object was created using A as a prototype, so only add B.
+            this.retains = new HashMap<>();
+            for (ObjectNode ret : a.retains.keySet()) {
+                this.retain(ret, a.retains.get(ret));
+            }
+            for (ObjectNode ret : b.retains.keySet()) {
+                this.retain(ret, combine(name, b.retains.get(ret)));
+            }
+            this.retains.put(b, name); // The new object was created using A as a prototype, so only add B.
 
             // Cleanup to avoid concurrent modification
             Set<ObjectNode> aInRefs = a.inRefs;
@@ -115,12 +125,7 @@ public class Analyzer {
             }
             for (ObjectNode ref : bOutRefs.keySet()) {
                 if (ref != a) {
-                    if (name.equals("mScaleType")) {
-                        System.out.println(a.object.getClazz().getName() + " -> " +
-                                b.object.getClazz().getName() + " " + name + " -> " +
-                                ref.object.getClazz().getName() + " " + bOutRefs.get(ref));
-                    }
-                    this.link(ref, name + "." + bOutRefs.get(ref));
+                    this.link(ref, combine(name, bOutRefs.get(ref)));
                 }
             }
         }
@@ -142,6 +147,14 @@ public class Analyzer {
             return name;
         }
 
+        public static String combine(String parent, String child) {
+            if (child.startsWith("[")) {
+                return parent + child;
+            } else {
+                return parent + "." + child;
+            }
+        }
+
         public void fold(ObjectNode child) {
             String name = unlink(child);
 
@@ -150,13 +163,16 @@ public class Analyzer {
                 child.outRefs = new HashMap<>();
                 for (ObjectNode ref : childRefs.keySet()) {
                     child.unlink(ref);
-                    this.link(ref, name + "." + childRefs.get(ref));
+                    this.link(ref, combine(name, childRefs.get(ref)));
                 }
             }
 
             this.size += child.size;
-            this.retains.addAll(child.retains);
-            this.retains.add(child);
+
+            for (ObjectNode ret : child.retains.keySet()) {
+                this.retain(ret, combine(name, child.retains.get(ret)));
+            }
+            this.retain(child, name);
         }
 
         @Override
@@ -266,14 +282,17 @@ public class Analyzer {
 
             // node doesn't have any outbound references, so transferring those is not required.
             for (ObjectNode parent : parents) {
+                String name = parent.outRefs.get(node);
                 parent.outRefs.remove(node);
                 parent.size += node.size / denom;
 
                 // For hard-folding we're going to add selfSize as if it's the object's own size.
                 // This is particularly useful e.g. when folding char[] to String, and byte[] to Bitmap.
                 if (soft) {
-                    parent.retains.addAll(node.retains);
-                    parent.retains.add(node);
+                    for (ObjectNode ret : node.retains.keySet()) {
+                        parent.retain(ret, ObjectNode.combine(name, node.retains.get(ret)));
+                    }
+                    parent.retain(node, name);
                 } else {
                     parent.selfSize += node.selfSize;
                 }
@@ -505,26 +524,36 @@ public class Analyzer {
         totalSize = 0;
         for (ObjectNode node : nodes) {
             int retainSize = node.selfSize;
-            for (ObjectNode ref : node.retains) {
+            for (ObjectNode ref : node.retains.keySet()) {
                 retainSize += ref.selfSize;
             }
 
             System.out.println(node.object.getClazz().getName() +
-                    ", size=" + Math.round(node.size) +
+                    ", size=" + Math.round(node.size) + " / " + node.selfSize +
                     ", inRefs=" + node.inRefs.size() + ", outRefs=" + node.outRefs.size() +
                     ", retains=" + retainSize + " (" + node.retains.size() + " objects)");
-
-            for (ObjectNode ref : node.outRefs.keySet()) {
-                System.out.println("    " + ref.object.getClazz().getName() + " " + node.outRefs.get(ref));
-            }
 /*
+            if (node.inRefs.size() < 5) {
+                System.out.println("  Inbound references:");
+                for (ObjectNode ref : node.inRefs) {
+                    System.out.println("    " + ref.object.getClazz().getName() + "." + ref.outRefs.get(node));
+                }
+            }
+
+            if (node.outRefs.size() < 5) {
+                System.out.println("  Outbound references:");
+                for (ObjectNode ref : node.outRefs.keySet()) {
+                    System.out.println("    " + ref.object.getClazz().getName() + " " + node.outRefs.get(ref));
+                }
+            }
+
             // com.google.android.clockwork.home.cuecard.CueCardPageIndicator
             // com.google.android.clockwork.now.NowRowAdapter
             // com.android.clockwork.gestures.detector.MCAGestureClassifier
             // com.google.android.clockwork.mediacontrols.MediaControlReceiver
-            if (node.object.getClazz().getName().equals("com.android.clockwork.gestures.detector.MCAGestureClassifier")) {
-                for (ObjectNode ref : node.retains) {
-                    System.out.println("    " + ref.object.getClazz().getName() + ", size=" + ref.selfSize);
+            if (node.object.getClazz().getName().equals("com.google.android.clockwork.home.cuecard.CueCardPageIndicator")) {
+                for (ObjectNode ref : node.retains.keySet()) {
+                    System.out.println("    " + ref.object.getClazz().getName() + ", size=" + ref.selfSize + " :: " + node.retains.get(ref));
                 }
             }
 

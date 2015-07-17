@@ -18,7 +18,7 @@ public class Analyzer {
 
     private static class ObjectNode {
         public IObject object;
-        public Set<ObjectNode> outRefs;
+        public Map<ObjectNode, String> outRefs;
         public Set<ObjectNode> inRefs;
         public Set<ObjectNode> retains;
         public double size;
@@ -27,16 +27,16 @@ public class Analyzer {
         // root node
         ObjectNode() {
             object = null;
-            outRefs = new HashSet<>();
+            outRefs = new HashMap<>();
             inRefs = null;
             size = 0;
             selfSize = 0;
         }
 
         // object node
-        ObjectNode(IObject object, ObjectNode parent) {
+        ObjectNode(IObject object, ObjectNode parent, String name) {
             this.object = object;
-            this.outRefs = new HashSet<>();
+            this.outRefs = new HashMap<>();
             this.inRefs = new HashSet<>();
             this.retains = new HashSet<>();
 
@@ -49,13 +49,15 @@ public class Analyzer {
             }
             this.size = this.selfSize;
 
-            parent.link(this);
+            parent.link(this, name);
         }
 
         // "A -> B" folded into "AB" using the outbound reference from A.
         ObjectNode(ObjectNode a, ObjectNode b) {
+            String name = a.outRefs.get(b);
+
             this.object = a.object;
-            this.outRefs = new HashSet<>();
+            this.outRefs = new HashMap<>();
             this.inRefs = new HashSet<>();
             this.size = a.size  + b.size;
             this.selfSize = a.selfSize;
@@ -67,72 +69,88 @@ public class Analyzer {
             // Cleanup to avoid concurrent modification
             Set<ObjectNode> aInRefs = a.inRefs;
             Set<ObjectNode> bInRefs = b.inRefs;
-            Set<ObjectNode> aOutRefs = a.outRefs;
-            Set<ObjectNode> bOutRefs = b.outRefs;
+            Map<ObjectNode, String> aOutRefs = a.outRefs;
+            Map<ObjectNode, String> bOutRefs = b.outRefs;
             a.inRefs = new HashSet<>();
             b.inRefs = new HashSet<>();
-            a.outRefs = new HashSet<>();
-            b.outRefs = new HashSet<>();
+            a.outRefs = new HashMap<>();
+            b.outRefs = new HashMap<>();
+
+            Map<ObjectNode, String> inRefNames = new HashMap<>();
 
             // Remove all old links
             for (ObjectNode ref : aInRefs) {
+                inRefNames.put(ref, ref.outRefs.get(a));
                 ref.outRefs.remove(a);
             }
-            for (ObjectNode ref : aOutRefs) {
+            for (ObjectNode ref : aOutRefs.keySet()) {
                 ref.inRefs.remove(a);
             }
             for (ObjectNode ref : bInRefs) {
+                if (!inRefNames.containsKey(ref)) {
+                    // Prefer the referencing object's link name.
+                    inRefNames.put(ref, ref.outRefs.get(b));
+                }
                 ref.outRefs.remove(b);
             }
-            for (ObjectNode ref : bOutRefs) {
+            for (ObjectNode ref : bOutRefs.keySet()) {
                 ref.inRefs.remove(b);
             }
 
             // Link again, being aware of self-linking.
             for (ObjectNode ref : aInRefs) {
                 if (ref != b) {
-                    ref.link(this);
+                    ref.link(this, inRefNames.get(ref));
                 }
             }
-            for (ObjectNode ref : aOutRefs) {
+            for (ObjectNode ref : aOutRefs.keySet()) {
                 if (ref != b) {
-                    this.link(ref);
+                    this.link(ref, aOutRefs.get(ref));
                 }
             }
             for (ObjectNode ref : bInRefs) {
                 if (ref != a) {
-                    ref.link(this);
+                    ref.link(this, inRefNames.get(ref));
                 }
             }
-            for (ObjectNode ref : bOutRefs) {
+            for (ObjectNode ref : bOutRefs.keySet()) {
                 if (ref != a) {
-                    this.link(ref);
+                    if (name.equals("mScaleType")) {
+                        System.out.println(a.object.getClazz().getName() + " -> " +
+                                b.object.getClazz().getName() + " " + name + " -> " +
+                                ref.object.getClazz().getName() + " " + bOutRefs.get(ref));
+                    }
+                    this.link(ref, name + "." + bOutRefs.get(ref));
                 }
             }
         }
 
-        public void link(ObjectNode child) {
+        public void link(ObjectNode child, String name) {
             if (child == this) {
                 return;
             }
-            this.outRefs.add(child);
+            if (!this.outRefs.containsKey(child)) {
+                this.outRefs.put(child, name);
+            }
             child.inRefs.add(this);
         }
 
-        public void unlink(ObjectNode child) {
+        public String unlink(ObjectNode child) {
+            String name = this.outRefs.get(child);
             this.outRefs.remove(child);
             child.inRefs.remove(this);
+            return name;
         }
 
         public void fold(ObjectNode child) {
-            unlink(child);
+            String name = unlink(child);
 
             if (child.outRefs.size() > 0) {
-                Set<ObjectNode> childRefs = child.outRefs;
-                child.outRefs = new HashSet<>();
-                for (ObjectNode ref : childRefs) {
+                Map<ObjectNode, String> childRefs = child.outRefs;
+                child.outRefs = new HashMap<>();
+                for (ObjectNode ref : childRefs.keySet()) {
                     child.unlink(ref);
-                    this.link(ref);
+                    this.link(ref, name + "." + childRefs.get(ref));
                 }
             }
 
@@ -167,7 +185,7 @@ public class Analyzer {
 
                 for (int instanceId : instanceIds) {
                     IObject instance = snapshot.getObject(instanceId);
-                    visited.put(instance, new ObjectNode(instance, root));
+                    visited.put(instance, new ObjectNode(instance, root, "#"));
                     queue.add(instance);
                 }
             }
@@ -193,9 +211,9 @@ public class Analyzer {
                     }
 
                     if (visited.containsKey(field)) {
-                        parent.link(visited.get(field));
+                        parent.link(visited.get(field), refName);
                     } else {
-                        visited.put(field, new ObjectNode(field, parent));
+                        visited.put(field, new ObjectNode(field, parent, refName));
                         queue.add(field);
                     }
                 }
@@ -217,13 +235,11 @@ public class Analyzer {
         while (!queue.isEmpty()) {
             ObjectNode instance = queue.remove();
 
-            for (ObjectNode field : instance.outRefs) {
-                if (graph.contains(field)) {
-                    continue;
+            for (ObjectNode field : instance.outRefs.keySet()) {
+                if (!graph.contains(field)) {
+                    graph.add(field);
+                    queue.add(field);
                 }
-
-                graph.add(field);
-                queue.add(field);
             }
         }
 
@@ -280,7 +296,7 @@ public class Analyzer {
 
         for (ObjectNode node : graph) {
             String name = node.object.getClazz().getName();
-            for (ObjectNode ref : node.outRefs) {
+            for (ObjectNode ref : node.outRefs.keySet()) {
                 String refName = ref.object.getClazz().getName();
                 if (refName.equals(name)) {
                     // Found a linked list entry... We'll get a lot of those, so watch out for duplicates.
@@ -298,7 +314,7 @@ public class Analyzer {
 
             ObjectNode next = null;
             String name = node.object.getClazz().getName();
-            for (ObjectNode ref : node.outRefs) {
+            for (ObjectNode ref : node.outRefs.keySet()) {
                 String refName = ref.object.getClazz().getName();
                 if (refName.equals(name)) {
                     next = ref;
@@ -318,7 +334,7 @@ public class Analyzer {
             graph.add(combo);
 
             // Check if the new node is still a part of linked list.
-            for (ObjectNode ref : combo.outRefs) {
+            for (ObjectNode ref : combo.outRefs.keySet()) {
                 String refName = ref.object.getClazz().getName();
                 if (refName.equals(name)) {
                     // Found a linked list entry... We'll get a lot of those, so watch out for duplicates.
@@ -365,12 +381,21 @@ public class Analyzer {
 
         for (ObjectNode node : graph) {
             String name = node.object.getClazz().getName();
-            for (ObjectNode ref : node.outRefs) {
+            for (ObjectNode ref : node.outRefs.keySet()) {
                 String refName = ref.object.getClazz().getName();
                 if (refName.startsWith(name + "$")) {
-                    // Found a class that references its own subclass...
-                    queue.add(node);
-                    break;
+                    // Found a class that references its own subclass (one time)...
+                    boolean single = true;
+                    for (ObjectNode inRef : ref.inRefs) {
+                        if (inRef != node && inRef.object.getClazz().getName().equals(name)) {
+                            single = false;
+                            break;
+                        }
+                    }
+                    if (single) {
+                        queue.add(node);
+                        break;
+                    }
                 }
             }
         }
@@ -381,7 +406,7 @@ public class Analyzer {
             // Gather all the subclass references.
             Set<ObjectNode> refs = new HashSet<>();
             String name = node.object.getClazz().getName();
-            for (ObjectNode ref : node.outRefs) {
+            for (ObjectNode ref : node.outRefs.keySet()) {
                 String refName = ref.object.getClazz().getName();
                 if (refName.startsWith(name + "$")) {
                     refs.add(ref);
@@ -403,7 +428,7 @@ public class Analyzer {
                 graph.add(combo);
 
                 // If the child node had any linked-list-style references, add them to the kill-list.
-                for (ObjectNode ref : combo.outRefs) {
+                for (ObjectNode ref : combo.outRefs.keySet()) {
                     String refName = ref.object.getClazz().getName();
                     if (refName.startsWith(name + "$")) {
                         refs.add(ref);
@@ -455,7 +480,7 @@ public class Analyzer {
         while (graph.size() != prevSize) {
             prevSize = graph.size();
             foldLeaves(graph, false);
-            foldSubclass(graph);
+//            foldSubclass(graph);
             foldLinkedLists(graph);
             foldHelpers(graph, components);
         }
@@ -465,7 +490,7 @@ public class Analyzer {
         while (graph.size() != prevSize) {
             prevSize = graph.size();
             foldLeaves(graph, true);
-            foldSubclass(graph);
+//            foldSubclass(graph);
             foldLinkedLists(graph);
             foldHelpers(graph, components);
         }
@@ -488,6 +513,10 @@ public class Analyzer {
                     ", size=" + Math.round(node.size) +
                     ", inRefs=" + node.inRefs.size() + ", outRefs=" + node.outRefs.size() +
                     ", retains=" + retainSize + " (" + node.retains.size() + " objects)");
+
+            for (ObjectNode ref : node.outRefs.keySet()) {
+                System.out.println("    " + ref.object.getClazz().getName() + " " + node.outRefs.get(ref));
+            }
 /*
             // com.google.android.clockwork.home.cuecard.CueCardPageIndicator
             // com.google.android.clockwork.now.NowRowAdapter
@@ -498,7 +527,7 @@ public class Analyzer {
                     System.out.println("    " + ref.object.getClazz().getName() + ", size=" + ref.selfSize);
                 }
             }
-*/
+
             for (ObjectNode ref : node.retains) {
                 if (ref.selfSize > 4096) {
                     System.out.println("    " + ref.object.getClazz().getName() + ", size=" + ref.selfSize);
@@ -512,7 +541,7 @@ public class Analyzer {
                 }
             }
 
-/*          String name = node.object.getClassSpecificName();
+          String name = node.object.getClassSpecificName();
             if (name != null) {
                 System.out.println("  data: \"" + name + "\"");
             }

@@ -18,36 +18,42 @@ public class Analyzer {
 
     private static class ObjectNode {
         public IObject object;
+        public ObjectNode folder;
         public Map<ObjectNode, String> outRefs;
         public Set<ObjectNode> inRefs;
         public Map<ObjectNode, String> retains;
         public double size;
-        public int selfSize;
+        public int retSize;
+        public int retCount;
 
         // root node
         ObjectNode() {
             object = null;
+            folder = null;
             outRefs = new HashMap<>();
             inRefs = null;
             size = 0;
-            selfSize = 0;
+            retSize = 0;
+            retCount = 0;
         }
 
         // object node
         ObjectNode(IObject object, ObjectNode parent, String name) {
             this.object = object;
+            this.folder = null;
             this.outRefs = new HashMap<>();
             this.inRefs = new HashSet<>();
             this.retains = new HashMap<>();
 
             IClass clazz = object.getClazz();
-            this.selfSize = clazz.getHeapSizePerInstance();
+            this.retSize = clazz.getHeapSizePerInstance();
             if (clazz.isArrayType()) {
                 int elementSize = ((object instanceof IObjectArray) ? 4 :
                         IPrimitiveArray.ELEMENT_SIZE[((IPrimitiveArray)object).getType()]);
-                this.selfSize = elementSize * ((IArray)object).getLength();
+                this.retSize = elementSize * ((IArray)object).getLength();
             }
-            this.size = this.selfSize;
+            this.size = this.retSize;
+            this.retCount = 0;
 
             parent.link(this, name);
         }
@@ -63,10 +69,11 @@ public class Analyzer {
             String name = a.outRefs.get(b);
 
             this.object = a.object;
+            this.folder = a.folder;
             this.outRefs = new HashMap<>();
             this.inRefs = new HashSet<>();
-            this.size = a.size  + b.size;
-            this.selfSize = a.selfSize;
+            this.size = a.size + b.size;
+            this.retSize = a.retSize;
             this.retains = new HashMap<>();
             for (ObjectNode ret : a.retains.keySet()) {
                 this.retain(ret, a.retains.get(ret));
@@ -213,7 +220,12 @@ public class Analyzer {
                 List<NamedReference> refs = instance.getOutboundReferences();
                 for (NamedReference ref : refs) {
                     String refName = ref.getName();
-                    IObject field = (IObject) instance.resolveValue(refName);
+                    Object ofield = instance.resolveValue(refName);
+                    if (!(ofield instanceof IObject)) {
+                        continue;
+                    }
+
+                    IObject field = (IObject) ofield;
                     if (field == null) {
                         continue;
                     }
@@ -286,26 +298,21 @@ public class Analyzer {
                 parent.outRefs.remove(node);
                 parent.size += node.size / denom;
 
-                // For hard-folding we're going to add selfSize as if it's the object's own size.
-                // This is particularly useful e.g. when folding char[] to String, and byte[] to Bitmap.
-                if (soft) {
-                    for (ObjectNode ret : node.retains.keySet()) {
-                        parent.retain(ret, ObjectNode.combine(name, node.retains.get(ret)));
-                    }
-                    parent.retain(node, name);
-                } else {
-                    parent.selfSize += node.selfSize;
+                for (ObjectNode ret : node.retains.keySet()) {
+                    parent.retain(ret, ObjectNode.combine(name, node.retains.get(ret)));
+                }
+                parent.retain(node, name);
+
+                if (!soft) {
+                    node.folder = parent;
                 }
 
-                if (parent.outRefs.size() == 0 && (soft || node.inRefs.size() == 1)) {
+                if (parent.outRefs.size() == 0 && (soft || parent.inRefs.size() == 1)) {
                     queue.add(parent);
                 }
             }
 
             graph.remove(node);
-            if (!soft) {
-                node.selfSize = 0;
-            }
         }
     }
 
@@ -394,71 +401,6 @@ public class Analyzer {
         }
     }
 
-    // To fold the "A -> A$B" links, even if its inRefs is not a single link (a combination of two previous methods).
-    private static void foldSubclass(Set<ObjectNode> graph) {
-        Queue<ObjectNode> queue = new LinkedList<>();
-
-        for (ObjectNode node : graph) {
-            String name = node.object.getClazz().getName();
-            for (ObjectNode ref : node.outRefs.keySet()) {
-                String refName = ref.object.getClazz().getName();
-                if (refName.startsWith(name + "$")) {
-                    // Found a class that references its own subclass (one time)...
-                    boolean single = true;
-                    for (ObjectNode inRef : ref.inRefs) {
-                        if (inRef != node && inRef.object.getClazz().getName().equals(name)) {
-                            single = false;
-                            break;
-                        }
-                    }
-                    if (single) {
-                        queue.add(node);
-                        break;
-                    }
-                }
-            }
-        }
-
-        while (!queue.isEmpty()) {
-            ObjectNode node = queue.remove();
-
-            // Gather all the subclass references.
-            Set<ObjectNode> refs = new HashSet<>();
-            String name = node.object.getClazz().getName();
-            for (ObjectNode ref : node.outRefs.keySet()) {
-                String refName = ref.object.getClazz().getName();
-                if (refName.startsWith(name + "$")) {
-                    refs.add(ref);
-                }
-            }
-
-            // Just like with a queue, but using concurrent modification...
-            while (!refs.isEmpty()) {
-                ObjectNode child = refs.iterator().next();
-                refs.remove(child);
-                if (!graph.contains(child)) {
-                    continue;
-                }
-
-                // We have two nodes which we must make into one.
-                ObjectNode combo = new ObjectNode(node, child);
-                graph.remove(node);
-                graph.remove(child);
-                graph.add(combo);
-
-                // If the child node had any linked-list-style references, add them to the kill-list.
-                for (ObjectNode ref : combo.outRefs.keySet()) {
-                    String refName = ref.object.getClazz().getName();
-                    if (refName.startsWith(name + "$")) {
-                        refs.add(ref);
-                    }
-                }
-
-                node = combo;
-            }
-        }
-    }
-
     public static void main(String[] args) {
         if (args.length < 1) {
             System.out.println("Usage: qdmat <dump>.hprof");
@@ -473,6 +415,8 @@ public class Analyzer {
 
         ObjectNode root = loadFile(dumpFile);
         Set<ObjectNode> graph = flattenGraph(root);
+
+        System.out.println("Nodes before reduction: " + graph.size());
 
         double totalSize = 0;
         final Map<String, Integer> typeCount = new HashMap<>();
@@ -499,7 +443,6 @@ public class Analyzer {
         while (graph.size() != prevSize) {
             prevSize = graph.size();
             foldLeaves(graph, false);
-//            foldSubclass(graph);
             foldLinkedLists(graph);
             foldHelpers(graph, components);
         }
@@ -509,7 +452,6 @@ public class Analyzer {
         while (graph.size() != prevSize) {
             prevSize = graph.size();
             foldLeaves(graph, true);
-//            foldSubclass(graph);
             foldLinkedLists(graph);
             foldHelpers(graph, components);
         }
@@ -521,64 +463,66 @@ public class Analyzer {
         });
         nodes.addAll(graph);
 
+        System.out.println("Nodes after reduction: " + graph.size());
+
+        Map<ObjectNode, Integer> retCount = new HashMap<>();
+        for (ObjectNode node : nodes) {
+            for (ObjectNode ret : node.retains.keySet()) {
+                if (retCount.containsKey(ret)) {
+                    retCount.put(ret, retCount.get(ret) + 1);
+                } else {
+                    retCount.put(ret, 1);
+                }
+            }
+        }
+
+        for (ObjectNode node : nodes) {
+            for (ObjectNode ret : node.retains.keySet()) {
+                if (retCount.get(ret) == 1) {
+                    node.retSize += ret.retSize;
+                    node.retCount++;
+                }
+            }
+        }
+
         totalSize = 0;
         for (ObjectNode node : nodes) {
-            int retainSize = node.selfSize;
-            for (ObjectNode ref : node.retains.keySet()) {
-                retainSize += ref.selfSize;
-            }
-
             System.out.println(node.object.getClazz().getName() +
-                    ", size=" + Math.round(node.size) + " / " + node.selfSize +
+                    ", weighed_size=" + Math.round(node.size) +
                     ", inRefs=" + node.inRefs.size() + ", outRefs=" + node.outRefs.size() +
-                    ", retains=" + retainSize + " (" + node.retains.size() + " objects)");
+                    ", retain_size=" + node.retSize + " (" + node.retCount + " objects)");
 /*
-            if (node.inRefs.size() < 5) {
-                System.out.println("  Inbound references:");
-                for (ObjectNode ref : node.inRefs) {
-                    System.out.println("    " + ref.object.getClazz().getName() + "." + ref.outRefs.get(node));
-                }
-            }
-
-            if (node.outRefs.size() < 5) {
-                System.out.println("  Outbound references:");
-                for (ObjectNode ref : node.outRefs.keySet()) {
-                    System.out.println("    " + ref.object.getClazz().getName() + " " + node.outRefs.get(ref));
-                }
-            }
-
             // com.google.android.clockwork.home.cuecard.CueCardPageIndicator
             // com.google.android.clockwork.now.NowRowAdapter
             // com.android.clockwork.gestures.detector.MCAGestureClassifier
             // com.google.android.clockwork.mediacontrols.MediaControlReceiver
-            if (node.object.getClazz().getName().equals("com.google.android.clockwork.home.cuecard.CueCardPageIndicator")) {
-                for (ObjectNode ref : node.retains.keySet()) {
-                    System.out.println("    " + ref.object.getClazz().getName() + ", size=" + ref.selfSize + " :: " + node.retains.get(ref));
+            if (node.object.getClazz().getName().equals("com.google.android.clockwork.stream.bridger.NotificationBridger")) {
+                System.out.println("  Outbound references:");
+                for (ObjectNode ref : node.outRefs.keySet()) {
+                    System.out.println("    " + ref.object.getClazz().getName() + " " + node.outRefs.get(ref));
+                    System.out.println("      size=" + Math.round(ref.size) +
+                            ", inRefs=" + ref.inRefs.size() + ", outRefs=" + ref.outRefs.size() +
+                            ", retains=" + ref.retSize + " (" + ref.retCount + " objects)");
+                }
+                System.out.println("  Retained objects:");
+                for (ObjectNode ret : node.retains.keySet()) {
+                    System.out.println("    " + ret.object.getClazz().getName() + ", size=" + ret.retSize + " :: " + node.retains.get(ret));
+                    String name = ret.object.getClassSpecificName();
+                    if (name != null) {
+                        System.out.println("      data: \"" + name + "\"");
+                    }
                 }
             }
 
-            for (ObjectNode ref : node.retains) {
-                if (ref.selfSize > 4096) {
-                    System.out.println("    " + ref.object.getClazz().getName() + ", size=" + ref.selfSize);
+            for (ObjectNode ret : node.retains.keySet()) {
+                if (ret.retSize > 4096 && retCount.get(ret) == 1) {
+                    System.out.println("    " + ret.object.getClazz().getName() + ", size=" + ret.retSize);
+                    System.out.println("        " + node.retains.get(ret));
+                    String name = ret.object.getClassSpecificName();
+                    if (name != null) {
+                        System.out.println("    data: \"" + name + "\"");
+                    }
                 }
-            }
-
-            if (node.object.getClazz().getName().equals("android.app.LoadedApk")) {
-                System.out.println("  Referenced by:");
-                for (ObjectNode ref : node.inRefs) {
-                    System.out.println("    " + ref.object.getClazz().getName());
-                }
-            }
-
-          String name = node.object.getClassSpecificName();
-            if (name != null) {
-                System.out.println("  data: \"" + name + "\"");
-            }
-
-            if (node.outRefs.size() == 1) {
-                ObjectNode ref = node.outRefs.iterator().next();
-                System.out.println("  outRef: " + ref.object.getClazz().getName()
-                        + " with " + ref.inRefs.size() + " refs");
             }
 */
             totalSize += node.size;
@@ -587,12 +531,18 @@ public class Analyzer {
         System.out.println("Total size: " + Math.round(totalSize));
 
         final Map<String, Double> typeSize = new HashMap<>();
+        final Map<String, Integer> retSize = new HashMap<>();
         for (ObjectNode node : graph) {
             String name = node.object.getClazz().getName();
             if (!typeSize.containsKey(name)) {
                 typeSize.put(name, node.size);
             } else {
                 typeSize.put(name, typeSize.get(name) + node.size);
+            }
+            if (!retSize.containsKey(name)) {
+                retSize.put(name, node.retSize);
+            } else {
+                retSize.put(name, retSize.get(name) + node.retSize);
             }
         }
 
@@ -603,9 +553,12 @@ public class Analyzer {
         });
         types.addAll(typeSize.keySet());
 
+        System.out.println("Components count: " + types.size());
+
         for (String type : types) {
             double size = typeSize.get(type);
-            System.out.printf("%s => %d (%.2f%%)\n", type, Math.round(size), size * 100 / totalSize);
+            System.out.printf("%s => %d (%.2f%%) / %d\n",
+                    type, Math.round(size), size * 100 / totalSize, retSize.get(type));
         }
     }
 

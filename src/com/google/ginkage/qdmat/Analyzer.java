@@ -224,11 +224,7 @@ public class Analyzer {
                     if (!(ofield instanceof IObject)) {
                         continue;
                     }
-
                     IObject field = (IObject) ofield;
-                    if (field == null) {
-                        continue;
-                    }
 
                     IClass clazz = field.getClazz();
                     String type = clazz.getName();
@@ -401,21 +397,7 @@ public class Analyzer {
         }
     }
 
-    public static void main(String[] args) {
-        if (args.length < 1) {
-            System.out.println("Usage: qdmat <dump>.hprof");
-            return;
-        }
-
-        File dumpFile = new File(args[0]);
-        if (!dumpFile.exists()) {
-            System.out.println("File " + args[0] + " not found");
-            return;
-        }
-
-        ObjectNode root = loadFile(dumpFile);
-        Set<ObjectNode> graph = flattenGraph(root);
-
+    public static SortedSet<ObjectNode> foldGraph(Set<ObjectNode> graph) {
         System.out.println("Nodes before reduction: " + graph.size());
 
         double totalSize = 0;
@@ -455,7 +437,6 @@ public class Analyzer {
             foldLinkedLists(graph);
             foldHelpers(graph, components);
         }
-
         SortedSet<ObjectNode> nodes = new TreeSet<>(new Comparator<ObjectNode>(){
             public int compare(ObjectNode a, ObjectNode b){
                 return (a.size < b.size ? 1 : -1);
@@ -485,18 +466,22 @@ public class Analyzer {
             }
         }
 
-        totalSize = 0;
+        return nodes;
+    }
+
+    public static void printStats(SortedSet<ObjectNode> nodes) {
+        int totalSize = 0;
         for (ObjectNode node : nodes) {
             System.out.println(node.object.getClazz().getName() +
                     ", weighed_size=" + Math.round(node.size) +
                     ", inRefs=" + node.inRefs.size() + ", outRefs=" + node.outRefs.size() +
                     ", retain_size=" + node.retSize + " (" + node.retCount + " objects)");
-/*
+
             // com.google.android.clockwork.home.cuecard.CueCardPageIndicator
             // com.google.android.clockwork.now.NowRowAdapter
             // com.android.clockwork.gestures.detector.MCAGestureClassifier
             // com.google.android.clockwork.mediacontrols.MediaControlReceiver
-            if (node.object.getClazz().getName().equals("com.google.android.clockwork.stream.bridger.NotificationBridger")) {
+            if (node.retCount > 1000) {   //node.object.getClazz().getName().equals("com.google.android.clockwork.stream.bridger.NotificationBridger")) {
                 System.out.println("  Outbound references:");
                 for (ObjectNode ref : node.outRefs.keySet()) {
                     System.out.println("    " + ref.object.getClazz().getName() + " " + node.outRefs.get(ref));
@@ -513,7 +498,7 @@ public class Analyzer {
                     }
                 }
             }
-
+/*
             for (ObjectNode ret : node.retains.keySet()) {
                 if (ret.retSize > 4096 && retCount.get(ret) == 1) {
                     System.out.println("    " + ret.object.getClazz().getName() + ", size=" + ret.retSize);
@@ -532,7 +517,7 @@ public class Analyzer {
 
         final Map<String, Double> typeSize = new HashMap<>();
         final Map<String, Integer> retSize = new HashMap<>();
-        for (ObjectNode node : graph) {
+        for (ObjectNode node : nodes) {
             String name = node.object.getClazz().getName();
             if (!typeSize.containsKey(name)) {
                 typeSize.put(name, node.size);
@@ -560,6 +545,24 @@ public class Analyzer {
             System.out.printf("%s => %d (%.2f%%) / %d\n",
                     type, Math.round(size), size * 100 / totalSize, retSize.get(type));
         }
+    }
+
+    public static void main(String[] args) {
+        if (args.length < 1) {
+            System.out.println("Usage: qdmat <dump>.hprof");
+            return;
+        }
+
+        File dumpFile = new File(args[0]);
+        if (!dumpFile.exists()) {
+            System.out.println("File " + args[0] + " not found");
+            return;
+        }
+
+        ObjectNode root = loadFile(dumpFile);
+        Set<ObjectNode> graph = flattenGraph(root);
+        SortedSet<ObjectNode> nodes = foldGraph(graph);
+        printStats(nodes);
     }
 
 }

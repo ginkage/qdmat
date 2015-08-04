@@ -2,191 +2,20 @@ package com.google.ginkage.qdmat;
 
 import org.eclipse.mat.SnapshotException;
 import org.eclipse.mat.parser.internal.SnapshotFactory;
+import org.eclipse.mat.parser.model.PrimitiveArrayImpl;
 import org.eclipse.mat.snapshot.ISnapshot;
-import org.eclipse.mat.snapshot.model.IArray;
 import org.eclipse.mat.snapshot.model.IClass;
 import org.eclipse.mat.snapshot.model.IObject;
-import org.eclipse.mat.snapshot.model.IObjectArray;
-import org.eclipse.mat.snapshot.model.IPrimitiveArray;
 import org.eclipse.mat.snapshot.model.NamedReference;
 import org.eclipse.mat.util.VoidProgressListener;
 
+import javax.imageio.ImageIO;
+import java.awt.image.BufferedImage;
 import java.io.File;
+import java.io.IOException;
 import java.util.*;
 
 public class Analyzer {
-
-    private static class ObjectNode {
-        public IObject object;
-        public ObjectNode folder;
-        public Map<ObjectNode, String> outRefs;
-        public Set<ObjectNode> inRefs;
-        public Map<ObjectNode, String> retains;
-        public double size;
-        public int retSize;
-        public int retCount;
-
-        // root node
-        ObjectNode() {
-            object = null;
-            folder = null;
-            outRefs = new HashMap<>();
-            inRefs = null;
-            size = 0;
-            retSize = 0;
-            retCount = 0;
-        }
-
-        // object node
-        ObjectNode(IObject object, ObjectNode parent, String name) {
-            this.object = object;
-            this.folder = null;
-            this.outRefs = new HashMap<>();
-            this.inRefs = new HashSet<>();
-            this.retains = new HashMap<>();
-
-            IClass clazz = object.getClazz();
-            this.retSize = clazz.getHeapSizePerInstance();
-            if (clazz.isArrayType()) {
-                int elementSize = ((object instanceof IObjectArray) ? 4 :
-                        IPrimitiveArray.ELEMENT_SIZE[((IPrimitiveArray)object).getType()]);
-                this.retSize = elementSize * ((IArray)object).getLength();
-            }
-            this.size = this.retSize;
-            this.retCount = 0;
-
-            parent.link(this, name);
-        }
-
-        void retain(ObjectNode ret, String name) {
-            if (!retains.containsKey(ret) && !name.contains("ClassLoader")) {
-                retains.put(ret, name);
-            }
-        }
-
-        // "A -> B" folded into "AB" using the outbound reference from A.
-        ObjectNode(ObjectNode a, ObjectNode b) {
-            String name = a.outRefs.get(b);
-
-            this.object = a.object;
-            this.folder = a.folder;
-            this.outRefs = new HashMap<>();
-            this.inRefs = new HashSet<>();
-            this.size = a.size + b.size;
-            this.retSize = a.retSize;
-            this.retains = new HashMap<>();
-            for (ObjectNode ret : a.retains.keySet()) {
-                this.retain(ret, a.retains.get(ret));
-            }
-            for (ObjectNode ret : b.retains.keySet()) {
-                this.retain(ret, combine(name, b.retains.get(ret)));
-            }
-            this.retains.put(b, name); // The new object was created using A as a prototype, so only add B.
-
-            // Cleanup to avoid concurrent modification
-            Set<ObjectNode> aInRefs = a.inRefs;
-            Set<ObjectNode> bInRefs = b.inRefs;
-            Map<ObjectNode, String> aOutRefs = a.outRefs;
-            Map<ObjectNode, String> bOutRefs = b.outRefs;
-            a.inRefs = new HashSet<>();
-            b.inRefs = new HashSet<>();
-            a.outRefs = new HashMap<>();
-            b.outRefs = new HashMap<>();
-
-            Map<ObjectNode, String> inRefNames = new HashMap<>();
-
-            // Remove all old links
-            for (ObjectNode ref : aInRefs) {
-                inRefNames.put(ref, ref.outRefs.get(a));
-                ref.outRefs.remove(a);
-            }
-            for (ObjectNode ref : aOutRefs.keySet()) {
-                ref.inRefs.remove(a);
-            }
-            for (ObjectNode ref : bInRefs) {
-                if (!inRefNames.containsKey(ref)) {
-                    // Prefer the referencing object's link name.
-                    inRefNames.put(ref, ref.outRefs.get(b));
-                }
-                ref.outRefs.remove(b);
-            }
-            for (ObjectNode ref : bOutRefs.keySet()) {
-                ref.inRefs.remove(b);
-            }
-
-            // Link again, being aware of self-linking.
-            for (ObjectNode ref : aInRefs) {
-                if (ref != b) {
-                    ref.link(this, inRefNames.get(ref));
-                }
-            }
-            for (ObjectNode ref : aOutRefs.keySet()) {
-                if (ref != b) {
-                    this.link(ref, aOutRefs.get(ref));
-                }
-            }
-            for (ObjectNode ref : bInRefs) {
-                if (ref != a) {
-                    ref.link(this, inRefNames.get(ref));
-                }
-            }
-            for (ObjectNode ref : bOutRefs.keySet()) {
-                if (ref != a) {
-                    this.link(ref, combine(name, bOutRefs.get(ref)));
-                }
-            }
-        }
-
-        public void link(ObjectNode child, String name) {
-            if (child == this) {
-                return;
-            }
-            if (!this.outRefs.containsKey(child)) {
-                this.outRefs.put(child, name);
-            }
-            child.inRefs.add(this);
-        }
-
-        public String unlink(ObjectNode child) {
-            String name = this.outRefs.get(child);
-            this.outRefs.remove(child);
-            child.inRefs.remove(this);
-            return name;
-        }
-
-        public static String combine(String parent, String child) {
-            if (child.startsWith("[")) {
-                return parent + child;
-            } else {
-                return parent + "." + child;
-            }
-        }
-
-        public void fold(ObjectNode child) {
-            String name = unlink(child);
-
-            if (child.outRefs.size() > 0) {
-                Map<ObjectNode, String> childRefs = child.outRefs;
-                child.outRefs = new HashMap<>();
-                for (ObjectNode ref : childRefs.keySet()) {
-                    child.unlink(ref);
-                    this.link(ref, combine(name, childRefs.get(ref)));
-                }
-            }
-
-            this.size += child.size;
-
-            for (ObjectNode ret : child.retains.keySet()) {
-                this.retain(ret, combine(name, child.retains.get(ret)));
-            }
-            this.retain(child, name);
-        }
-
-        @Override
-        public int hashCode() {
-            return (object == null ? 0 : object.hashCode());
-        }
-    }
 
     private static ObjectNode loadFile(File dumpFile) {
         ObjectNode root = new ObjectNode();
@@ -272,7 +101,7 @@ public class Analyzer {
 
     // Hanging nodes, which only have inbound references.
     // Soft folding means distributing the size between referencing objects when there's more than one inbound link.
-    private static void foldLeaves(Set<ObjectNode> graph, boolean soft) {
+    private static void foldLeaves(Set<ObjectNode> graph, boolean soft, Map<ObjectNode, BufferedImage> bitmaps) {
         Queue<ObjectNode> queue = new LinkedList<>();
 
         for (ObjectNode node : graph) {
@@ -298,6 +127,33 @@ public class Analyzer {
                     parent.retain(ret, ObjectNode.combine(name, node.retains.get(ret)));
                 }
                 parent.retain(node, name);
+
+                if (parent.object.getClazz().getName().equals("android.graphics.Bitmap") && name.equals("mBuffer")) {
+                    if (node.object.getClazz().getName().equals("byte[]")) {
+                        try {
+                            Integer width = Integer.class.cast(parent.object.resolveValue("mWidth"));
+                            Integer height = Integer.class.cast(parent.object.resolveValue("mHeight"));
+                            PrimitiveArrayImpl array = PrimitiveArrayImpl.class.cast(node.object);
+                            if (width != null && height != null && array != null) {
+                                byte[] values = (byte[]) array.getValueArray();
+                                int size = values.length / 4;
+                                int[] argb = new int[size];
+                                for (int i = 0, j = 0; i < size; ++i) {
+                                    int r = (values[j++] & 0xFF);
+                                    int g = (values[j++] & 0xFF);
+                                    int b = (values[j++] & 0xFF);
+                                    int a = (values[j++] & 0xFF);
+                                    argb[i] = (a << 24) | (r << 16) | (g << 8) | b;
+                                }
+                                BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
+                                image.setRGB(0, 0, width, height, argb, 0, width);
+                                bitmaps.put(parent, image);
+                            }
+                        } catch (SnapshotException e) {
+                            e.printStackTrace();
+                        }
+                    }
+                }
 
                 if (!soft) {
                     node.folder = parent;
@@ -397,8 +253,8 @@ public class Analyzer {
         }
     }
 
-    public static SortedSet<ObjectNode> foldGraph(Set<ObjectNode> graph) {
-        System.out.println("Nodes before reduction: " + graph.size());
+    public static SortedSet<ObjectNode> foldGraph(Set<ObjectNode> graph, Map<ObjectNode, BufferedImage> bitmaps) {
+//        System.out.println("Nodes before reduction: " + graph.size());
 
         double totalSize = 0;
         final Map<String, Integer> typeCount = new HashMap<>();
@@ -411,7 +267,7 @@ public class Analyzer {
             }
             totalSize += node.size;
         }
-        System.out.println("Total size: " + Math.round(totalSize));
+//        System.out.println("Total size: " + Math.round(totalSize));
 
         Set<String> components = new HashSet<>();
         for (String name : typeCount.keySet()) {
@@ -424,7 +280,7 @@ public class Analyzer {
         int prevSize = -1;
         while (graph.size() != prevSize) {
             prevSize = graph.size();
-            foldLeaves(graph, false);
+            foldLeaves(graph, false, bitmaps);
             foldLinkedLists(graph);
             foldHelpers(graph, components);
         }
@@ -433,18 +289,19 @@ public class Analyzer {
         prevSize = -1;
         while (graph.size() != prevSize) {
             prevSize = graph.size();
-            foldLeaves(graph, true);
+            foldLeaves(graph, true, bitmaps);
             foldLinkedLists(graph);
             foldHelpers(graph, components);
         }
-        SortedSet<ObjectNode> nodes = new TreeSet<>(new Comparator<ObjectNode>(){
-            public int compare(ObjectNode a, ObjectNode b){
+
+        SortedSet<ObjectNode> nodes = new TreeSet<>(new Comparator<ObjectNode>() {
+            public int compare(ObjectNode a, ObjectNode b) {
                 return (a.size < b.size ? 1 : -1);
             }
         });
         nodes.addAll(graph);
 
-        System.out.println("Nodes after reduction: " + graph.size());
+//        System.out.println("Nodes after reduction: " + graph.size());
 
         Map<ObjectNode, Integer> retCount = new HashMap<>();
         for (ObjectNode node : nodes) {
@@ -454,14 +311,24 @@ public class Analyzer {
                 } else {
                     retCount.put(ret, 1);
                 }
+                ret.retainedBy.add(node);
             }
         }
-
+/*
+        for (ObjectNode bitmap : bitmaps.keySet()) {
+            try {
+                ImageIO.write(bitmaps.get(bitmap), "PNG",
+                        new File(bitmap.object.getObjectId() + "-" + Math.round(bitmap.size) + ".png"));
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+*/
         for (ObjectNode node : nodes) {
             for (ObjectNode ret : node.retains.keySet()) {
                 if (retCount.get(ret) == 1) {
                     node.retSize += ret.retSize;
-                    node.retCount++;
+                    node.unique.add(ret);
                 }
             }
         }
@@ -475,13 +342,20 @@ public class Analyzer {
             System.out.println(node.object.getClazz().getName() +
                     ", weighed_size=" + Math.round(node.size) +
                     ", inRefs=" + node.inRefs.size() + ", outRefs=" + node.outRefs.size() +
-                    ", retain_size=" + node.retSize + " (" + node.retCount + " objects)");
+                    ", retain_size=" + node.retSize + " (" + node.unique.size() + " objects)");
+
+            for (ObjectNode ret : node.retains.keySet()) {
+                if (ret.object.getClazz().getName().equals("android.graphics.Bitmap")) {
+                    System.out.println("  Bitmap " + ret.object.getObjectId() + " (" + Math.round(ret.size) + " bytes):");
+                    System.out.println("    " + node.retains.get(ret));
+                }
+            }
 
             // com.google.android.clockwork.home.cuecard.CueCardPageIndicator
             // com.google.android.clockwork.now.NowRowAdapter
             // com.android.clockwork.gestures.detector.MCAGestureClassifier
             // com.google.android.clockwork.mediacontrols.MediaControlReceiver
-            if (node.retCount > 1000) {   //node.object.getClazz().getName().equals("com.google.android.clockwork.stream.bridger.NotificationBridger")) {
+/*            if (node.retCount > 1000) {   //node.object.getClazz().getName().equals("com.google.android.clockwork.stream.bridger.NotificationBridger")) {
                 System.out.println("  Outbound references:");
                 for (ObjectNode ref : node.outRefs.keySet()) {
                     System.out.println("    " + ref.object.getClazz().getName() + " " + node.outRefs.get(ref));
@@ -498,7 +372,7 @@ public class Analyzer {
                     }
                 }
             }
-/*
+
             for (ObjectNode ret : node.retains.keySet()) {
                 if (ret.retSize > 4096 && retCount.get(ret) == 1) {
                     System.out.println("    " + ret.object.getClazz().getName() + ", size=" + ret.retSize);
@@ -511,7 +385,6 @@ public class Analyzer {
             }
 */
             totalSize += node.size;
-
         }
         System.out.println("Total size: " + Math.round(totalSize));
 
@@ -561,8 +434,11 @@ public class Analyzer {
 
         ObjectNode root = loadFile(dumpFile);
         Set<ObjectNode> graph = flattenGraph(root);
-        SortedSet<ObjectNode> nodes = foldGraph(graph);
-        printStats(nodes);
+        Map<ObjectNode, BufferedImage> bitmaps = new HashMap<>();
+        SortedSet<ObjectNode> nodes = foldGraph(graph, bitmaps);
+//        printStats(nodes);
+
+        HeapContents.run(graph, nodes, bitmaps);
     }
 
 }

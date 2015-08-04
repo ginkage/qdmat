@@ -9,6 +9,10 @@ sourceSets {
     }
 }
 
+dependencies {
+    compile fileTree(dir: 'libs', include: ['*.jar'])
+}
+
 sourceCompatibility = 1.7
 version = '1.0'
 jar {

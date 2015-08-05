@@ -184,6 +184,10 @@ public class ObjectNode {
         this.retain(child, name);
     }
 
+    public String getType() {
+        return object.getClazz().getName();
+    }
+
     @Override
     public int hashCode() {
         return (object == null ? 0 : object.hashCode());

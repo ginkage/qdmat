@@ -128,8 +128,8 @@ public class Analyzer {
                 }
                 parent.retain(node, name);
 
-                if (parent.object.getClazz().getName().equals("android.graphics.Bitmap") && name.equals("mBuffer")) {
-                    if (node.object.getClazz().getName().equals("byte[]")) {
+                if (parent.getType().equals("android.graphics.Bitmap") && name.equals("mBuffer")) {
+                    if (node.getType().equals("byte[]")) {
                         try {
                             Integer width = Integer.class.cast(parent.object.resolveValue("mWidth"));
                             Integer height = Integer.class.cast(parent.object.resolveValue("mHeight"));
@@ -173,9 +173,9 @@ public class Analyzer {
         Queue<ObjectNode> queue = new LinkedList<>();
 
         for (ObjectNode node : graph) {
-            String name = node.object.getClazz().getName();
+            String name = node.getType();
             for (ObjectNode ref : node.outRefs.keySet()) {
-                String refName = ref.object.getClazz().getName();
+                String refName = ref.getType();
                 if (refName.equals(name)) {
                     // Found a linked list entry... We'll get a lot of those, so watch out for duplicates.
                     queue.add(node);
@@ -191,9 +191,9 @@ public class Analyzer {
             }
 
             ObjectNode next = null;
-            String name = node.object.getClazz().getName();
+            String name = node.getType();
             for (ObjectNode ref : node.outRefs.keySet()) {
-                String refName = ref.object.getClazz().getName();
+                String refName = ref.getType();
                 if (refName.equals(name)) {
                     next = ref;
                     break;
@@ -213,7 +213,7 @@ public class Analyzer {
 
             // Check if the new node is still a part of linked list.
             for (ObjectNode ref : combo.outRefs.keySet()) {
-                String refName = ref.object.getClazz().getName();
+                String refName = ref.getType();
                 if (refName.equals(name)) {
                     // Found a linked list entry... We'll get a lot of those, so watch out for duplicates.
                     queue.add(combo);
@@ -232,8 +232,8 @@ public class Analyzer {
                 // More like a "potential" parent, we'll check that right away.
                 ObjectNode parent = node.inRefs.iterator().next();
 
-                String name = node.object.getClazz().getName();
-                String pname = parent.object.getClazz().getName();
+                String name = node.getType();
+                String pname = parent.getType();
 
                 if (name.contains("$") || name.contains("[]") || name.equals(pname) ||
                         !components.contains(name) || name.startsWith("java.") || name.startsWith("android.")) {
@@ -259,7 +259,7 @@ public class Analyzer {
         double totalSize = 0;
         final Map<String, Integer> typeCount = new HashMap<>();
         for (ObjectNode node : graph) {
-            String name = node.object.getClazz().getName();
+            String name = node.getType();
             if (!typeCount.containsKey(name)) {
                 typeCount.put(name, 1);
             } else {
@@ -339,13 +339,13 @@ public class Analyzer {
     public static void printStats(SortedSet<ObjectNode> nodes) {
         int totalSize = 0;
         for (ObjectNode node : nodes) {
-            System.out.println(node.object.getClazz().getName() +
+            System.out.println(node.getType() +
                     ", weighed_size=" + Math.round(node.size) +
                     ", inRefs=" + node.inRefs.size() + ", outRefs=" + node.outRefs.size() +
                     ", retain_size=" + node.retSize + " (" + node.unique.size() + " objects)");
 
             for (ObjectNode ret : node.retains.keySet()) {
-                if (ret.object.getClazz().getName().equals("android.graphics.Bitmap")) {
+                if (ret.getType().equals("android.graphics.Bitmap")) {
                     System.out.println("  Bitmap " + ret.object.getObjectId() + " (" + Math.round(ret.size) + " bytes):");
                     System.out.println("    " + node.retains.get(ret));
                 }
@@ -355,17 +355,17 @@ public class Analyzer {
             // com.google.android.clockwork.now.NowRowAdapter
             // com.android.clockwork.gestures.detector.MCAGestureClassifier
             // com.google.android.clockwork.mediacontrols.MediaControlReceiver
-/*            if (node.retCount > 1000) {   //node.object.getClazz().getName().equals("com.google.android.clockwork.stream.bridger.NotificationBridger")) {
+/*            if (node.retCount > 1000) {   //node.getType().equals("com.google.android.clockwork.stream.bridger.NotificationBridger")) {
                 System.out.println("  Outbound references:");
                 for (ObjectNode ref : node.outRefs.keySet()) {
-                    System.out.println("    " + ref.object.getClazz().getName() + " " + node.outRefs.get(ref));
+                    System.out.println("    " + ref.getType() + " " + node.outRefs.get(ref));
                     System.out.println("      size=" + Math.round(ref.size) +
                             ", inRefs=" + ref.inRefs.size() + ", outRefs=" + ref.outRefs.size() +
                             ", retains=" + ref.retSize + " (" + ref.retCount + " objects)");
                 }
                 System.out.println("  Retained objects:");
                 for (ObjectNode ret : node.retains.keySet()) {
-                    System.out.println("    " + ret.object.getClazz().getName() + ", size=" + ret.retSize + " :: " + node.retains.get(ret));
+                    System.out.println("    " + ret.getType() + ", size=" + ret.retSize + " :: " + node.retains.get(ret));
                     String name = ret.object.getClassSpecificName();
                     if (name != null) {
                         System.out.println("      data: \"" + name + "\"");
@@ -375,7 +375,7 @@ public class Analyzer {
 
             for (ObjectNode ret : node.retains.keySet()) {
                 if (ret.retSize > 4096 && retCount.get(ret) == 1) {
-                    System.out.println("    " + ret.object.getClazz().getName() + ", size=" + ret.retSize);
+                    System.out.println("    " + ret.getType() + ", size=" + ret.retSize);
                     System.out.println("        " + node.retains.get(ret));
                     String name = ret.object.getClassSpecificName();
                     if (name != null) {
@@ -391,7 +391,7 @@ public class Analyzer {
         final Map<String, Double> typeSize = new HashMap<>();
         final Map<String, Integer> retSize = new HashMap<>();
         for (ObjectNode node : nodes) {
-            String name = node.object.getClazz().getName();
+            String name = node.getType();
             if (!typeSize.containsKey(name)) {
                 typeSize.put(name, node.size);
             } else {
@@ -420,6 +420,54 @@ public class Analyzer {
         }
     }
 
+    public static void printComponents(ComponentNode root, int level) {
+        for (int i = 0; i < level; ++i) {
+            System.out.print("  ");
+        }
+        System.out.println(root.name + ": " +
+                root.children.size() + " children, " + root.objects.size() + " instances, " +
+                root.retSize + " bytes unique in " + root.unique.size() + " objects of " + root.retains.size());
+        for (ComponentNode child : root.children) {
+            printComponents(child, level + 1);
+        }
+    }
+
+    public static ComponentNode calculateComponents(Set<ObjectNode> graph) {
+        Map<String, ComponentNode> components = new HashMap<>();
+        ComponentNode root = new ComponentNode("*");
+
+        for (ObjectNode node : graph) {
+            String name = node.getType();
+            ComponentNode comp = components.get(name);
+            if (comp == null) {
+                comp = new ComponentNode(name);
+                components.put(name, comp);
+            }
+            comp.addObject(node);
+
+            System.out.println("  Processing: " + name + " (" + node.retains.size() + " retains)");
+            int lastDot = Math.max(name.lastIndexOf('.'), name.lastIndexOf('['));
+            while (lastDot >= 0) {
+                String part = name.substring(0, lastDot);
+                lastDot = Math.max(part.lastIndexOf('.'), part.lastIndexOf('['));
+                ComponentNode parent = components.get(part);
+                if (parent == null) {
+                    parent = new ComponentNode(name);
+                    components.put(name, parent);
+                }
+                System.out.println("+ " + part);
+                parent.addChild(comp);
+                comp = parent;
+            }
+            System.out.println("+ *");
+            root.addChild(comp);
+        }
+
+        root.recalcSize();
+
+        return root;
+    }
+
     public static void main(String[] args) {
         if (args.length < 1) {
             System.out.println("Usage: qdmat <dump>.hprof");
@@ -437,6 +485,8 @@ public class Analyzer {
         Map<ObjectNode, BufferedImage> bitmaps = new HashMap<>();
         SortedSet<ObjectNode> nodes = foldGraph(graph, bitmaps);
 //        printStats(nodes);
+        ComponentNode compRoot = calculateComponents(graph);
+        printComponents(compRoot, 0);
 
         HeapContents.run(graph, nodes, bitmaps);
     }

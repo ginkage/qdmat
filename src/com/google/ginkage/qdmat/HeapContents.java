@@ -31,6 +31,7 @@ public class HeapContents implements TreeWillExpandListener, TreeSelectionListen
     private Set<ObjectNode> mGraph;
     private SortedSet<ObjectNode> mNodes;
     private Map<ObjectNode, BufferedImage> mBitmaps;
+    private Set<ComponentNode> mComponents;
     private int mFindBitmap;
     private TreeNode mFoundNode;
 
@@ -92,7 +93,7 @@ public class HeapContents implements TreeWillExpandListener, TreeSelectionListen
         public ObjectNode mNode;
 
         ObjectTreeNode(ObjectNode node) {
-            super(node.object.getClazz().getName() +
+            super(node.getType() +
                     ", weighed_size=" + Math.round(node.size) +
                     ", retain_size=" + node.retSize + " (" + node.unique.size() + " objects)");
             mNode = node;
@@ -202,7 +203,7 @@ public class HeapContents implements TreeWillExpandListener, TreeSelectionListen
             } else if (value instanceof ObjectTreeNode) {
                 ObjectTreeNode treeNode = (ObjectTreeNode) value;
                 ObjectNode node = treeNode.mNode;
-                typeLabel.setText(node.object.getClazz().getName());
+                typeLabel.setText(node.getType());
                 pathLabel.setText(" {" + Math.round(node.size) + " bytes}");
                 pathLabel.setForeground(Color.GRAY);
                 retCountLabel.setText((node.unique.size() > 0 ? " (" + node.unique.size() + " objects)" : ""));
@@ -272,7 +273,7 @@ public class HeapContents implements TreeWillExpandListener, TreeSelectionListen
         final Map<String, Integer> retSize = new HashMap<>();
         int totalSize = 0;
         for (ObjectNode node : mNodes) {
-            String name = node.object.getClazz().getName();
+            String name = node.getType();
             if (!typeSize.containsKey(name)) {
                 typeSize.put(name, node.size);
             } else {
@@ -316,7 +317,7 @@ public class HeapContents implements TreeWillExpandListener, TreeSelectionListen
             bitmapRoot.add(node);
             for (ObjectNode ref : node.mNode.retainedBy) {
                 node.add(new BitmapRetNode(ref,
-                        ref.object.getClazz().getName(), ref.retains.get(bitmap), node.mNode.object.getObjectId()));
+                        ref.getType(), ref.retains.get(bitmap), node.mNode.object.getObjectId()));
             }
         }
 
@@ -338,7 +339,7 @@ public class HeapContents implements TreeWillExpandListener, TreeSelectionListen
         for (ObjectNode ref : retSet) {
             String retPath = node.retains.get(ref);
             retPaths.put(retPath, new RetainTreeNode(ref,
-                    ref.object.getClazz().getName(), retPath));
+                    ref.getType(), retPath));
         }
 
         for (String retPath : retPaths.keySet()) {
@@ -347,7 +348,7 @@ public class HeapContents implements TreeWillExpandListener, TreeSelectionListen
             int lastDot = Math.max(retPath.lastIndexOf('.'), retPath.lastIndexOf('['));
             while (lastDot >= 0 && !found) {
                 String part = retPath.substring(0, lastDot);
-                lastDot = Math.max(retPath.lastIndexOf('.'), retPath.lastIndexOf('['));
+                lastDot = Math.max(part.lastIndexOf('.'), part.lastIndexOf('['));
                 RetainTreeNode parent = retPaths.get(part);
                 if (parent != null) {
                     retNode.mParent = parent;
@@ -400,7 +401,7 @@ public class HeapContents implements TreeWillExpandListener, TreeSelectionListen
         sortedInRefs.addAll(node.inRefs);
         for (ObjectNode ref : sortedInRefs) {
             inRefs.add(new ObjectTreeNode(ref,
-                    ref.object.getClazz().getName() + " . " + ref.outRefs.get(node)));
+                    ref.getType() + " . " + ref.outRefs.get(node)));
         }
 
         DefaultMutableTreeNode outRefs = new DefaultMutableTreeNode(
@@ -409,7 +410,7 @@ public class HeapContents implements TreeWillExpandListener, TreeSelectionListen
         sortedOutRefs.addAll(node.outRefs.keySet());
         for (ObjectNode ref : sortedOutRefs) {
             outRefs.add(new ObjectTreeNode(ref,
-                    ref.object.getClazz().getName() + " " + node.outRefs.get(ref)));
+                    ref.getType() + " " + node.outRefs.get(ref)));
         }
 
         RetainTreeNode unique = new RetainTreeNode(node, "Unique retains", "");
@@ -453,7 +454,7 @@ public class HeapContents implements TreeWillExpandListener, TreeSelectionListen
         if (last instanceof RetainTreeNode) {
             RetainTreeNode treeNode = (RetainTreeNode) last;
             ObjectNode node = treeNode.mNode;
-            if (node.object.getClazz().getName().equals("android.graphics.Bitmap")) {
+            if (node.getType().equals("android.graphics.Bitmap")) {
                 dataLabel.setText("");
                 dataLabel.setIcon(new ImageIcon(mBitmaps.get(node)));
                 return;

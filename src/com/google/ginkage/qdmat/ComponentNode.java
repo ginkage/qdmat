@@ -26,15 +26,25 @@ public class ComponentNode {
         for (ObjectNode ret : node.retains.keySet()) {
             retains.add(ret);
         }
-        for (ObjectNode ret : node.unique) {
-            unique.add(ret);
-        }
     }
 
     public void recalcSize() {
         allSize = 0;
+        unique = new HashSet<>();
         for (ObjectNode ret : retains) {
             allSize += ret.selfSize;
+
+            boolean isUnique = true;
+            for (ObjectNode ref : ret.retainedBy) {
+                if (!ref.getType().startsWith(name)) {
+                    isUnique = false;
+                    break;
+                }
+            }
+
+            if (isUnique) {
+                unique.add(ret);
+            }
         }
 
         retSize = 0;
@@ -49,27 +59,8 @@ public class ComponentNode {
 
     public void addChild(ComponentNode node) {
         children.add(node);
-        for (ObjectNode ret : node.unique) {
-            unique.add(ret);
-        }
         for (ObjectNode ret : node.retains) {
-            if (!retains.contains(ret)) {
-                boolean isUnique = unique.contains(ret);
-                if (!isUnique) {
-                    // Might be false for the child, but true for parent. Check again.
-                    isUnique = true;
-                    for (ObjectNode ref : ret.retainedBy) {
-                        if (!ref.getType().startsWith(name)) {
-                            isUnique = false;
-                            break;
-                        }
-                    }
-                }
-                if (isUnique) {
-                    unique.add(ret);
-                }
-                retains.add(ret);
-            }
+            retains.add(ret);
         }
     }
 

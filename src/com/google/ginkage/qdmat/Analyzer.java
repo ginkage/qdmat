@@ -426,7 +426,8 @@ public class Analyzer {
         }
         System.out.println(root.name + ": " +
                 root.children.size() + " children, " + root.objects.size() + " instances, " +
-                root.retSize + " bytes unique in " + root.unique.size() + " objects of " + root.retains.size());
+                root.retSize + " bytes unique in " + root.unique.size() + " objects of " +
+                root.allSize + " bytes and " + root.retains.size() + " objects");
         for (ComponentNode child : root.children) {
             printComponents(child, level + 1);
         }
@@ -434,7 +435,7 @@ public class Analyzer {
 
     public static ComponentNode calculateComponents(Set<ObjectNode> graph) {
         Map<String, ComponentNode> components = new HashMap<>();
-        ComponentNode root = new ComponentNode("*");
+        ComponentNode root = new ComponentNode("");
 
         for (ObjectNode node : graph) {
             String name = node.getType();
@@ -445,21 +446,21 @@ public class Analyzer {
             }
             comp.addObject(node);
 
-            System.out.println("  Processing: " + name + " (" + node.retains.size() + " retains)");
-            int lastDot = Math.max(name.lastIndexOf('.'), name.lastIndexOf('['));
+//            System.out.println("  Processing: " + name + " (" + node.retains.size() + " retains)");
+            int lastDot = Math.max(name.lastIndexOf('$'), Math.max(name.lastIndexOf('.'), name.lastIndexOf('[')));
             while (lastDot >= 0) {
                 String part = name.substring(0, lastDot);
-                lastDot = Math.max(part.lastIndexOf('.'), part.lastIndexOf('['));
+                lastDot = Math.max(part.lastIndexOf('$'), Math.max(part.lastIndexOf('.'), part.lastIndexOf('[')));
                 ComponentNode parent = components.get(part);
                 if (parent == null) {
-                    parent = new ComponentNode(name);
-                    components.put(name, parent);
+                    parent = new ComponentNode(part);
+                    components.put(part, parent);
                 }
-                System.out.println("+ " + part);
+//                System.out.println("+ " + part);
                 parent.addChild(comp);
                 comp = parent;
             }
-            System.out.println("+ *");
+//            System.out.println("+ *");
             root.addChild(comp);
         }
 

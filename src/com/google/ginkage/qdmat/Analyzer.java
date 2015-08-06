@@ -59,7 +59,8 @@ public class Analyzer {
                     String type = clazz.getName();
                     if (type.equals("java.lang.ref.WeakReference") ||
                             type.equals("java.lang.ref.FinalizerReference") ||
-                            type.equals("java.lang.reflect.ArtMethod")) {
+                            type.equals("java.lang.reflect.ArtMethod") ||
+                            type.contains("ClassLoader")) {
                         continue;
                     }
 
@@ -115,7 +116,7 @@ public class Analyzer {
 
             Set<ObjectNode> parents = node.inRefs;
             node.inRefs = new HashSet<>();
-            int denom = parents.size();
+            double denom = parents.size();
 
             // node doesn't have any outbound references, so transferring those is not required.
             for (ObjectNode parent : parents) {
@@ -253,6 +254,21 @@ public class Analyzer {
         }
     }
 
+    public static void printSize(Set<ObjectNode> graph) {
+        int totalSize = 0;
+        Set<ObjectNode> retains = new HashSet<>();
+        for (ObjectNode node : graph) {
+            for (ObjectNode ret : node.retains.keySet()) {
+                retains.add(ret);
+            }
+            totalSize += node.selfSize;
+        }
+        for (ObjectNode ret : retains) {
+            totalSize += ret.selfSize;
+        }
+        System.out.println("size: " + totalSize);
+    }
+
     public static SortedSet<ObjectNode> foldGraph(Set<ObjectNode> graph, Map<ObjectNode, BufferedImage> bitmaps) {
 //        System.out.println("Nodes before reduction: " + graph.size());
 
@@ -312,6 +328,7 @@ public class Analyzer {
                     retCount.put(ret, 1);
                 }
                 ret.retainedBy.add(node);
+                node.allSize += ret.selfSize;
             }
         }
 /*
@@ -487,9 +504,9 @@ public class Analyzer {
         SortedSet<ObjectNode> nodes = foldGraph(graph, bitmaps);
 //        printStats(nodes);
         ComponentNode compRoot = calculateComponents(graph);
-        printComponents(compRoot, 0);
+//        printComponents(compRoot, 0);
 
-        HeapContents.run(graph, nodes, bitmaps);
+        HeapContents.run(graph, nodes, bitmaps, compRoot);
     }
 
 }

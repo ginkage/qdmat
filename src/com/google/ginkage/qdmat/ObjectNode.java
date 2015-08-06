@@ -19,6 +19,7 @@ public class ObjectNode {
     public double size;
     public int retSize;
     public int selfSize;
+    public int allSize;
 
     // root node
     ObjectNode() {
@@ -29,6 +30,7 @@ public class ObjectNode {
         size = 0;
         retSize = 0;
         selfSize = 0;
+        allSize = 0;
         retains = null;
         unique = null;
         retainedBy = null;
@@ -45,20 +47,21 @@ public class ObjectNode {
         this.retainedBy = new HashSet<>();
 
         IClass clazz = object.getClazz();
-        this.retSize = clazz.getHeapSizePerInstance();
+        this.selfSize = clazz.getHeapSizePerInstance();
         if (clazz.isArrayType()) {
             int elementSize = ((object instanceof IObjectArray) ? 4 :
                     IPrimitiveArray.ELEMENT_SIZE[((IPrimitiveArray)object).getType()]);
-            this.retSize = elementSize * ((IArray)object).getLength();
+            this.selfSize = elementSize * ((IArray)object).getLength();
         }
-        this.selfSize = this.retSize;
-        this.size = this.retSize;
+        this.retSize = this.selfSize;
+        this.size = this.selfSize;
+        this.allSize = this.selfSize;
 
         parent.link(this, name);
     }
 
-    void retain(ObjectNode ret, String name) {
-        if (!retains.containsKey(ret) && !name.contains("ClassLoader")) {
+    public void retain(ObjectNode ret, String name) {
+        if (!retains.containsKey(ret)) {
             retains.put(ret, name);
         }
     }
@@ -74,6 +77,7 @@ public class ObjectNode {
         this.size = a.size + b.size;
         this.retSize = a.retSize;
         this.selfSize = a.selfSize;
+        this.allSize = a.allSize;
         this.retains = new HashMap<>();
         this.unique = new HashSet<>();
         this.retainedBy = new HashSet<>();

@@ -31,7 +31,7 @@ public class HeapContents implements TreeWillExpandListener, TreeSelectionListen
     private Set<ObjectNode> mGraph;
     private SortedSet<ObjectNode> mNodes;
     private Map<ObjectNode, BufferedImage> mBitmaps;
-    private Set<ComponentNode> mComponents;
+    private ComponentNode mComponentRoot;
     private int mFindBitmap;
     private TreeNode mFoundNode;
 
@@ -131,6 +131,25 @@ public class HeapContents implements TreeWillExpandListener, TreeSelectionListen
         }
     }
 
+    private class ComponentTreeNode extends DefaultMutableTreeNode {
+        public ComponentNode mNode;
+        public String mName;
+
+        ComponentTreeNode(ComponentNode node) {
+            super(node.name +
+                    ", weighed_size=" + Math.round(node.softSize) +
+                    ", retain_size=" + node.retSize + " (" + node.unique.size() + " objects)");
+            mNode = node;
+            mName = node.name;
+        }
+
+        ComponentTreeNode(ComponentNode node, String name) {
+            super(name + " [" + Math.round(node.softSize) + " bytes]");
+            mNode = node;
+            mName = name;
+        }
+    }
+
     private class BitmapTreeNode extends DefaultMutableTreeNode {
         public ObjectNode mNode;
 
@@ -206,9 +225,24 @@ public class HeapContents implements TreeWillExpandListener, TreeSelectionListen
                 typeLabel.setText(node.getType());
                 pathLabel.setText(" {" + Math.round(node.size) + " bytes}");
                 pathLabel.setForeground(Color.GRAY);
-                retCountLabel.setText((node.unique.size() > 0 ? " (" + node.unique.size() + " objects)" : ""));
+                retCountLabel.setText((node.unique.size() > 0 ? " (" + node.unique.size() + " / " + node.retains.size() + " objects)" : ""));
                 retCountLabel.setForeground(new Color(191, 0, 0));
-                retSizeLabel.setText(" [" + node.retSize + " bytes]");
+                retSizeLabel.setText(" [" + node.retSize + " / " + node.allSize + " bytes]");
+                retSizeLabel.setForeground(new Color(0, 127, 127));
+                typeLabel.setIcon(super.getIcon());
+                renderer.setBackground(sel ?
+                        super.getBackgroundSelectionColor() : super.getBackgroundNonSelectionColor());
+
+                return renderer;
+            } else if (value instanceof ComponentTreeNode) {
+                ComponentTreeNode treeNode = (ComponentTreeNode) value;
+                ComponentNode node = treeNode.mNode;
+                typeLabel.setText(node.name);
+                pathLabel.setText(" {" + Math.round(node.softSize) + " bytes}");
+                pathLabel.setForeground(Color.GRAY);
+                retCountLabel.setText((node.unique.size() > 0 ? " (" + node.unique.size() + " / " + node.retains.size() + " objects)" : ""));
+                retCountLabel.setForeground(new Color(191, 0, 0));
+                retSizeLabel.setText(" [" + node.retSize + " / " + node.allSize + " bytes]");
                 retSizeLabel.setForeground(new Color(0, 127, 127));
                 typeLabel.setIcon(super.getIcon());
                 renderer.setBackground(sel ?
@@ -234,39 +268,41 @@ public class HeapContents implements TreeWillExpandListener, TreeSelectionListen
 
     }
 
-    HeapContents(Set<ObjectNode> graph, SortedSet<ObjectNode> nodes, Map<ObjectNode, BufferedImage> bitmaps) {
+    HeapContents(
+            Set<ObjectNode> graph, SortedSet<ObjectNode> nodes,
+            Map<ObjectNode, BufferedImage> bitmaps, ComponentNode compRoot) {
         mGraph = graph;
         mNodes = nodes;
         mBitmaps = bitmaps;
+        mComponentRoot = compRoot;
         mFindBitmap = -1;
         mFoundNode = null;
         $$$setupUI$$$();
     }
 
-    public static void run(Set<ObjectNode> graph, SortedSet<ObjectNode> nodes, Map<ObjectNode, BufferedImage> bitmaps) {
+    public static void run(
+            Set<ObjectNode> graph, SortedSet<ObjectNode> nodes,
+            Map<ObjectNode, BufferedImage> bitmaps, ComponentNode compRoot) {
         JFrame frame = new JFrame("HeapContents");
-        HeapContents gui = new HeapContents(graph, nodes, bitmaps);
+        HeapContents gui = new HeapContents(graph, nodes, bitmaps, compRoot);
         frame.setContentPane(gui.contentPanel);
         frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         frame.pack();
         frame.setVisible(true);
     }
 
-    private void createUIComponents() {
-        MyRenderer renderer = new MyRenderer();
-
-        mObjectRoot = new DefaultMutableTreeNode("Objects");
+    private DefaultMutableTreeNode createObjectTree() {
+        DefaultMutableTreeNode objectRoot = new DefaultMutableTreeNode("Objects");
 
         for (ObjectNode node : mNodes) {
             ObjectTreeNode newNode = new ObjectTreeNode(node);
-            mObjectRoot.add(newNode);
+            objectRoot.add(newNode);
         }
 
-        objectTree = new JTree(mObjectRoot);
-        objectTree.addTreeWillExpandListener(this);
-        objectTree.addTreeSelectionListener(this);
-        objectTree.setCellRenderer(renderer);
+        return objectRoot;
+    }
 
+    private DefaultMutableTreeNode createComponentOverviewTree() {
         DefaultMutableTreeNode componentRoot = new DefaultMutableTreeNode("Components");
 
         final Map<String, Double> typeSize = new HashMap<>();
@@ -300,8 +336,31 @@ public class HeapContents implements TreeWillExpandListener, TreeSelectionListen
                     type, Math.round(size), size * 100 / totalSize, retSize.get(type))));
         }
 
-        componentTree = new JTree(componentRoot);
+        return componentRoot;
+    }
 
+    private ComponentTreeNode addComponentNode(ComponentNode node, String name) {
+        ComponentTreeNode treeNode = new ComponentTreeNode(node, name);
+
+        SortedSet<ComponentTreeNode> children = new TreeSet<>(new Comparator<ComponentTreeNode>() {
+            public int compare(ComponentTreeNode a, ComponentTreeNode b) {
+                return ((a.mNode.softSize < b.mNode.softSize) ? 1 : -1);
+            }
+        });
+
+        for (ComponentNode child : node.children) {
+            ComponentTreeNode treeChild = addComponentNode(child, child.name + (child.isClass ? "" : ".*"));
+            children.add(treeChild);
+        }
+
+        for (ComponentTreeNode child : children) {
+            treeNode.add(child);
+        }
+
+        return treeNode;
+    }
+
+    private DefaultMutableTreeNode createBitmapTree() {
         Comparator<ObjectNode> objectComparator = new Comparator<ObjectNode>() {
             public int compare(ObjectNode a, ObjectNode b) {
                 return (a.size < b.size ? 1 : -1);
@@ -321,6 +380,24 @@ public class HeapContents implements TreeWillExpandListener, TreeSelectionListen
             }
         }
 
+        return bitmapRoot;
+    }
+
+    private void createUIComponents() {
+        MyRenderer renderer = new MyRenderer();
+
+        mObjectRoot = createObjectTree();
+        objectTree = new JTree(mObjectRoot);
+        objectTree.addTreeWillExpandListener(this);
+        objectTree.addTreeSelectionListener(this);
+        objectTree.setCellRenderer(renderer);
+
+        DefaultMutableTreeNode componentRoot = addComponentNode(mComponentRoot, "*");
+        componentTree = new JTree(componentRoot);
+        componentTree.setCellRenderer(renderer);
+        componentTree.addMouseListener(this);
+
+        DefaultMutableTreeNode bitmapRoot = createBitmapTree();
         bitmapTree = new JTree(bitmapRoot);
         bitmapTree.addTreeSelectionListener(this);
         bitmapTree.addMouseListener(this);
@@ -508,6 +585,23 @@ public class HeapContents implements TreeWillExpandListener, TreeSelectionListen
                         }
                         mFindBitmap = -1;
                         mFoundNode = null;
+                        break;
+                    }
+                }
+            } else if (last instanceof ComponentTreeNode) {
+                ComponentTreeNode comp = (ComponentTreeNode) last;
+                if (comp.mNode.isClass) {
+                    Enumeration e = mObjectRoot.children();
+                    while (e.hasMoreElements()) {
+                        ObjectTreeNode node = ObjectTreeNode.class.cast(e.nextElement());
+                        if (node != null && node.mNode.getType().equals(comp.mNode.name)) {
+                            TreeNode[] nodes = ((DefaultTreeModel) tree.getModel()).getPathToRoot(node);
+                            TreePath tpath = new TreePath(nodes);
+                            tabbedPane.setSelectedIndex(0);
+                            objectTree.setSelectionPath(tpath);
+                            objectTree.scrollPathToVisible(tpath);
+                            break;
+                        }
                     }
                 }
             }

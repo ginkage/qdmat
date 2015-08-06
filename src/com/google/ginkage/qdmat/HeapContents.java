@@ -94,7 +94,7 @@ public class HeapContents implements TreeWillExpandListener, TreeSelectionListen
 
         ObjectTreeNode(ObjectNode node) {
             super(node.getType() +
-                    ", weighed_size=" + Math.round(node.size) +
+                    ", weighted_size=" + Math.round(node.size) +
                     ", retain_size=" + node.retSize + " (" + node.unique.size() + " objects)");
             mNode = node;
             add(new DefaultMutableTreeNode("dummy"));
@@ -137,7 +137,7 @@ public class HeapContents implements TreeWillExpandListener, TreeSelectionListen
 
         ComponentTreeNode(ComponentNode node) {
             super(node.name +
-                    ", weighed_size=" + Math.round(node.softSize) +
+                    ", weighted_size=" + Math.round(node.softSize) +
                     ", retain_size=" + node.retSize + " (" + node.unique.size() + " objects)");
             mNode = node;
             mName = node.name;

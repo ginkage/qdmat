@@ -357,7 +357,7 @@ public class Analyzer {
         int totalSize = 0;
         for (ObjectNode node : nodes) {
             System.out.println(node.getType() +
-                    ", weighed_size=" + Math.round(node.size) +
+                    ", weigthed_size=" + Math.round(node.size) +
                     ", inRefs=" + node.inRefs.size() + ", outRefs=" + node.outRefs.size() +
                     ", retain_size=" + node.retSize + " (" + node.unique.size() + " objects)");
 
